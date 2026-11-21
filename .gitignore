@@ -9,7 +9,9 @@
 # Data: raw datasets are downloaded by scripts/download_data.py
 # (UIT-ViSFD terms: research use, do not redistribute).
 # ---------------------------------------------------------------
-data/
+# Leading "/" anchors the rule to the repo root. Without it, `data/` would also hide
+# src/review_insight/data/ (code) and evals/data/ (committed sample indices).
+/data/
 
 # Eval response cache (re-runs cost $0). Results JSON in evals/results/ IS tracked.
 evals/.cache/
