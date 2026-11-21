@@ -90,7 +90,8 @@ Prompt engineering (zero-shot, few-shot, dynamic few-shot) · structured output 
 | Registry | GitHub Container Registry (GHCR) | Free; saves Azure credit |
 | Hosting | Azure Container Apps (Azure for Students) | `min-replicas=0` to scale to zero |
 | CI/CD | GitHub Actions | Azure login via OIDC (no long-lived secrets) |
-| Quality | ruff, ruff-format, mypy (strict on `src/`), pytest, pre-commit, gitleaks | |
+| Quality | ruff, ruff-format, mypy (strict on `src/`), pytest (+ pytest-asyncio, pytest-cov), pre-commit, gitleaks | |
+| Test HTTP client | `httpx2` (dev only) | Required by Starlette's `TestClient`; replaces `httpx`, which Starlette deprecated (approved 2026-11-21) |
 
 Exact library versions are pinned in `uv.lock`. Model pricing lives in `config/pricing.yaml`, filled from the official Gemini pricing page at implementation time. **No prices are hard-coded from memory.**
 
