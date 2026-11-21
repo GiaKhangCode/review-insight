@@ -1,0 +1,168 @@
+{
+  "run": {
+    "split": "test_500",
+    "limit": null,
+    "n": 500,
+    "git_sha": "e95ca91",
+    "date": "2026-11-21",
+    "seed": 42
+  },
+  "config": {
+    "name": "baseline_tfidf",
+    "analyzer": "tfidf",
+    "seed": 42,
+    "tfidf": {
+      "ngram_max": 2,
+      "min_df": 2,
+      "c_grid": [
+        0.1,
+        0.3,
+        1.0,
+        3.0,
+        10.0,
+        30.0,
+        100.0,
+        300.0
+      ]
+    },
+    "tune": {
+      "split": "dev",
+      "exclude_sample": "dev_100"
+    }
+  },
+  "analyzer": {
+    "best_c": 100.0,
+    "tune_pair_f1_by_c": {
+      "0.1": 0.5039,
+      "0.3": 0.6315,
+      "1.0": 0.705,
+      "3.0": 0.7325,
+      "10.0": 0.7461,
+      "30.0": 0.7476,
+      "100.0": 0.7482,
+      "300.0": 0.7469
+    },
+    "train_n": 7786,
+    "tune_n": 1012
+  },
+  "metrics": {
+    "pair": {
+      "precision": 0.7877,
+      "recall": 0.7011,
+      "f1": 0.7419,
+      "support": 1529,
+      "tp": 1072,
+      "fp": 289,
+      "fn": 457
+    },
+    "aspect_detection": {
+      "micro": {
+        "precision": 0.8993,
+        "recall": 0.8005,
+        "f1": 0.8471,
+        "support": 1529,
+        "tp": 1224,
+        "fp": 137,
+        "fn": 305
+      },
+      "macro_f1": 0.7407,
+      "per_aspect": {
+        "SCREEN": {
+          "precision": 0.9062,
+          "recall": 0.5273,
+          "f1": 0.6667,
+          "support": 55,
+          "tp": 29,
+          "fp": 3,
+          "fn": 26
+        },
+        "CAMERA": {
+          "precision": 0.9667,
+          "recall": 0.8286,
+          "f1": 0.8923,
+          "support": 140,
+          "tp": 116,
+          "fp": 4,
+          "fn": 24
+        },
+        "FEATURES": {
+          "precision": 0.9026,
+          "recall": 0.8424,
+          "f1": 0.8715,
+          "support": 165,
+          "tp": 139,
+          "fp": 15,
+          "fn": 26
+        },
+        "BATTERY": {
+          "precision": 0.9532,
+          "recall": 0.9256,
+          "f1": 0.9392,
+          "support": 242,
+          "tp": 224,
+          "fp": 11,
+          "fn": 18
+        },
+        "PERFORMANCE": {
+          "precision": 0.8648,
+          "recall": 0.834,
+          "f1": 0.8491,
+          "support": 253,
+          "tp": 211,
+          "fp": 33,
+          "fn": 42
+        },
+        "STORAGE": {
+          "precision": 0.0,
+          "recall": 0.0,
+          "f1": 0.0,
+          "support": 2,
+          "tp": 0,
+          "fp": 0,
+          "fn": 2
+        },
+        "DESIGN": {
+          "precision": 0.9245,
+          "recall": 0.6533,
+          "f1": 0.7656,
+          "support": 75,
+          "tp": 49,
+          "fp": 4,
+          "fn": 26
+        },
+        "PRICE": {
+          "precision": 0.8761,
+          "recall": 0.75,
+          "f1": 0.8082,
+          "support": 132,
+          "tp": 99,
+          "fp": 14,
+          "fn": 33
+        },
+        "GENERAL": {
+          "precision": 0.8474,
+          "recall": 0.808,
+          "f1": 0.8273,
+          "support": 323,
+          "tp": 261,
+          "fp": 47,
+          "fn": 62
+        },
+        "SER&ACC": {
+          "precision": 0.9412,
+          "recall": 0.6761,
+          "f1": 0.7869,
+          "support": 142,
+          "tp": 96,
+          "fp": 6,
+          "fn": 46
+        }
+      }
+    },
+    "latency_ms": {
+      "p50": 4.5,
+      "p95": 6.4
+    },
+    "cost_per_1k_usd": 0.0
+  }
+}
