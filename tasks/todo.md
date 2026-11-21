@@ -33,7 +33,7 @@ Default verification for every task: `uv run ruff check . && uv run ruff format 
   - Files: `scripts/download_data.py`, `src/review_insight/data/visfd.py`, `evals/data/samples.json`, `docs/DATA_CARD.md`, `tests/unit/test_visfd.py`
   - 💡 data provenance, leakage-free splits
 
-- [ ] **T5: Metrics module** (S) · deps: T3
+- [x] **T5: Metrics module** (S) · deps: T3
   - Acceptance: aspect-detection F1 (micro and macro), pair F1 (micro), per-aspect P/R/F1 with support, urgency/routing accuracy, macro F1 and confusion matrix, latency p50/p95, cost per 1k
   - Verify: unit tests against small cases computed by hand, plus cross-checks against `sklearn.metrics`
   - Files: `evals/metrics.py`, `tests/unit/test_metrics.py`
