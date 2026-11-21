@@ -27,7 +27,7 @@ Default verification for every task: `uv run ruff check . && uv run ruff format 
   - Files: `src/review_insight/domain/{schemas,enums,grounding}.py`, `tests/unit/test_grounding.py`
   - 💡 output contracts, grounding
 
-- [ ] **T4: Dataset download and loader** (S) · deps: T3
+- [x] **T4: Dataset download and loader** (S) · deps: T3
   - Acceptance: `scripts/download_data.py` fetches the zip to `data/raw/` (gitignored) and verifies SHA-256 · `parse_label("{BATTERY#Positive};{OTHERS};")` → domain objects · stratified fixed samples saved by index: `test_500`, `smoke_50`, `dev_100` (seed 42) · `docs/DATA_CARD.md` (source, citation, terms, label stats, imbalance)
   - Verify: parser unit tests, including `OTHERS` and malformed labels · loader returns 7,786 / 1,112 / 2,224 rows
   - Files: `scripts/download_data.py`, `src/review_insight/data/visfd.py`, `evals/data/samples.json`, `docs/DATA_CARD.md`, `tests/unit/test_visfd.py`

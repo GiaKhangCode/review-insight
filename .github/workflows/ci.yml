@@ -51,7 +51,7 @@ jobs:
           SKIP: gitleaks
 
       - name: Type check
-        run: uv run mypy src
+        run: uv run mypy # paths come from [tool.mypy] files in pyproject.toml
 
       - name: Tests with coverage gate
         run: uv run pytest --cov=review_insight --cov-report=term --cov-fail-under=80

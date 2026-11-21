@@ -44,7 +44,7 @@ def test_valid_result_parses_from_llm_style_json() -> None:
 
 
 def test_no_aspect_mentioned_is_a_valid_empty_list() -> None:
-    # Maps to the dataset's {OTHERS} label.
+    # e.g. a pure question ("có tai nghe không?"); in the dataset: a row labelled only {OTHERS}.
     result = AnalysisResult(aspects=[], urgency=Urgency.LOW, route_to=Route.NONE)
 
     assert result.aspects == []
