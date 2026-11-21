@@ -1,0 +1,13 @@
+# Normalize line endings: store LF in the repo, check out LF everywhere.
+# Developed on Windows, but CI, Docker and Azure run Linux.
+* text=auto eol=lf
+
+# Windows-only scripts must keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+
+# Binary files: never touch their bytes.
+*.png binary
+*.jpg binary
+*.zip binary
+*.npz binary

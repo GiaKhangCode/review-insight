@@ -1,0 +1,84 @@
+[project]
+name = "review-insight"
+version = "0.0.1"
+description = "LLM-powered aspect-based sentiment, urgency and routing for Vietnamese e-commerce reviews."
+readme = "README.md"
+license = "MIT"
+authors = [{ name = "Trần Huỳnh Gia Khang" }]
+requires-python = ">=3.11"
+# Runtime dependencies are added task by task with `uv add <pkg>`,
+# so every dependency in this list has a reason traceable to a commit.
+dependencies = []
+
+[dependency-groups]
+# Installed by `uv sync` for local dev and CI; NOT installed in the production image.
+dev = [
+    "mypy>=1.13",
+    "pre-commit>=4.0",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "pytest-cov>=6.0",
+    "ruff>=0.8",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/review_insight"]
+
+# ---------------------------------------------------------------------------
+# Ruff: linter + formatter (replaces flake8, isort, black, pyupgrade)
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle errors / warnings
+    "F",        # pyflakes: unused imports, undefined names
+    "I",        # isort: import ordering
+    "B",        # flake8-bugbear: likely bugs (mutable defaults, ...)
+    "UP",       # pyupgrade: modern Python syntax
+    "SIM",      # flake8-simplify
+    "N",        # pep8-naming
+    "S",        # flake8-bandit: security smells (hard-coded secrets, eval, ...)
+    "ASYNC",    # blocking calls inside async functions
+    "RUF",      # ruff-specific rules
+]
+
+[tool.ruff.lint.per-file-ignores]
+# `assert` is how pytest works; it is only banned in application code.
+"tests/**" = ["S101"]
+
+# ---------------------------------------------------------------------------
+# Mypy: static type checking, strict on application code
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.11"
+files = ["src"]
+strict = true
+warn_unreachable = true
+pretty = true
+
+# ---------------------------------------------------------------------------
+# Pytest + coverage
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: needs a real Postgres (docker compose up db)",
+]
+
+[tool.coverage.run]
+source = ["review_insight"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true

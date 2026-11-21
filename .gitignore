@@ -1,0 +1,43 @@
+# ---------------------------------------------------------------
+# Secrets: never commit. Only the template (.env.example) is tracked.
+# ---------------------------------------------------------------
+.env
+.env.*
+!.env.example
+
+# ---------------------------------------------------------------
+# Data: raw datasets are downloaded by scripts/download_data.py
+# (UIT-ViSFD terms: research use, do not redistribute).
+# ---------------------------------------------------------------
+data/
+
+# Eval response cache (re-runs cost $0). Results JSON in evals/results/ IS tracked.
+evals/.cache/
+
+# ---------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environment created by `uv sync`
+.venv/
+
+# Tool caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# ---------------------------------------------------------------
+# Editors / OS
+# ---------------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
