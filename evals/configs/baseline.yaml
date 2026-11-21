@@ -1,0 +1,20 @@
+# Config B (SPEC §7.1): supervised TF-IDF + Logistic Regression baseline.
+# Run: uv run python -m evals.run --config evals/configs/baseline.yaml --split test_500
+
+name: baseline_tfidf
+analyzer: tfidf
+seed: 42
+
+tfidf:
+  ngram_max: 2 # syllable unigrams + bigrams ("pin", "trâu", "pin trâu")
+  min_df: 2 # drop n-grams seen in only one training review (typos, one-off names)
+  # Tried in ascending order; the best dev pair F1 wins, ties go to the smaller C.
+  # Extended upward after the first run picked 30.0, the top of [0.1 .. 30.0]: a best value
+  # on the edge of the grid means the optimum may lie outside it.
+  c_grid: [0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0, 300.0]
+
+tune:
+  split: dev
+  # dev_100 is where the LLM configs are compared at Checkpoint A. Tuning C on it would
+  # give the baseline an unfair, optimistic score there, so it is held out.
+  exclude_sample: dev_100

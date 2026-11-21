@@ -85,6 +85,7 @@ Prompt engineering (zero-shot, few-shot, dynamic few-shot) · structured output 
 | Database | Supabase (managed Postgres) | Accessed with SQLAlchemy 2 (async) + asyncpg; migrations with Alembic |
 | Retry | `tenacity` | |
 | Baseline ML | scikit-learn | TF-IDF + one-vs-rest Logistic Regression |
+| Config files | PyYAML (`safe_load` only) + `types-PyYAML` (dev) | Eval configs, prompt templates, pricing (approved 2026-11-21) |
 | Frontend (later) | Next.js | Separate milestone after v1.0 API; consumes OpenAPI-generated types |
 | Container | Docker (multi-stage, non-root) | |
 | Registry | GitHub Container Registry (GHCR) | Free; saves Azure credit |
@@ -238,7 +239,8 @@ text ─► normalize (NFC, trim, collapse whitespace) ─► hash ─► cache 
 Choose the config with the highest pair F1 among those with p95 latency ≤ 3 s and cost ≤ 2× the cheapest LLM config. Ties go to the cheaper config.
 
 ### 7.4 Artifacts
-- `evals/results/<date>_<config>.json`: raw metrics per run. Each run is also logged as a Langfuse dataset run.
+- `evals/results/<date>_<config>_<split>[_n<limit>].json`: raw metrics per run, with the config, git sha and seed (the split is in the name so a dev and a test run on the same day do not overwrite each other). Metrics only, no review text, so these files are committed. Each run is also logged as a Langfuse dataset run.
+- The runner refuses to score `train`, and refuses to score any review used to tune hyperparameters (the baseline tunes C on dev minus `dev_100`).
 - `evals/REPORT.md`: comparison table, per-aspect breakdown, 10+ annotated error examples, and the conclusion.
 - `evals/baseline.json`: the metrics of the current production config, used by the CI gate.
 
@@ -252,12 +254,14 @@ On PRs touching `prompts/`, `src/review_insight/llm/` or `config/`, CI runs a **
 ```bash
 uv sync                                                       # install deps
 uv run alembic upgrade head                                   # apply DB migrations
-uv run uvicorn review_insight.main:app --reload               # dev server on :8000
+uv run uvicorn review_insight.main:create_app --factory --reload  # dev server on :8000
 uv run pytest --cov=review_insight --cov-fail-under=80        # tests + coverage
-uv run ruff check . && uv run ruff format --check . && uv run mypy src
+uv run ruff check . && uv run ruff format --check . && uv run mypy   # mypy paths in pyproject
 uv run python scripts/download_data.py                        # fetch UIT-ViSFD
-uv run python -m evals.baseline_tfidf                         # train and score the baseline
-uv run python -m evals.run --config evals/configs/fewshot_dynamic_31.yaml --split test --limit 500
+uv run python scripts/make_samples.py                         # (re)create the fixed eval samples
+uv run python -m evals.run --config evals/configs/baseline.yaml --split test_500   # baseline
+uv run python -m evals.run --config evals/configs/fewshot_dynamic_31.yaml --split test_500
+# --split: dev | test | dev_100 | test_500 | smoke_50 (never train) · --limit N: first N only
 uv run python -m evals.report                                 # regenerate evals/REPORT.md
 uv run python scripts/sync_prompts.py --label staging         # push prompts to Langfuse
 docker compose up --build                                     # api + postgres locally
