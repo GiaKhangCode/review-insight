@@ -1,0 +1,58 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A new push to the same branch cancels the previous, now-outdated run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Least privilege: jobs can only read the repo unless a job asks for more.
+permissions:
+  contents: read
+
+jobs:
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # lets gitleaks comment on the offending line in a PR
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history: scan every commit in the PR, not just the last one
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  quality:
+    name: Lint, types, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.11"
+          enable-cache: true # reuse downloaded wheels across runs (keyed on uv.lock)
+
+      - name: Install dependencies (must match uv.lock exactly)
+        run: uv sync --locked
+
+      - name: Pre-commit hooks (gitleaks runs in its own job)
+        run: uv run pre-commit run --all-files --show-diff-on-failure
+        env:
+          SKIP: gitleaks
+
+      - name: Type check
+        run: uv run mypy src
+
+      - name: Tests with coverage gate
+        run: uv run pytest --cov=review_insight --cov-report=term --cov-fail-under=80
+        env:
+          APP_ENV: ci
