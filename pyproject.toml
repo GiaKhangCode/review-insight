@@ -8,11 +8,16 @@ authors = [{ name = "Trần Huỳnh Gia Khang" }]
 requires-python = ">=3.11"
 # Runtime dependencies are added task by task with `uv add <pkg>`,
 # so every dependency in this list has a reason traceable to a commit.
-dependencies = []
+dependencies = [
+    "fastapi>=0.165.0",
+    "pydantic-settings>=2.16.3",
+    "uvicorn[standard]>=0.54.0",
+]
 
 [dependency-groups]
 # Installed by `uv sync` for local dev and CI; NOT installed in the production image.
 dev = [
+    "httpx2>=2.16.2",
     "mypy>=1.13",
     "pre-commit>=4.0",
     "pytest>=8.3",
@@ -50,6 +55,10 @@ select = [
     "RUF",      # ruff-specific rules
 ]
 
+[tool.ruff.lint.isort]
+# Explicit, so import grouping never depends on whether a module exists yet.
+known-first-party = ["review_insight"]
+
 [tool.ruff.lint.per-file-ignores]
 # `assert` is how pytest works; it is only banned in application code.
 "tests/**" = ["S101"]
@@ -70,6 +79,7 @@ pretty = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"   # fresh event loop per test (isolation)
 addopts = "-ra --strict-markers"
 markers = [
     "integration: needs a real Postgres (docker compose up db)",
