@@ -21,7 +21,7 @@ Default verification for every task: `uv run ruff check . && uv run ruff format 
 
 ## Phase 1: Measure first
 
-- [ ] **T3: Domain schemas** (S) · deps: T2
+- [x] **T3: Domain schemas** (S) · deps: T2
   - Acceptance: enums `Aspect` (10), `Sentiment`, `Urgency`, `Route` · `AspectSentiment(aspect, sentiment, evidence)` · `AnalysisResult` · `validate_grounded()` rejects evidence that is not a substring (after NFC normalization)
   - Verify: unit tests for valid, invalid and Unicode-normalization edge cases
   - Files: `src/review_insight/domain/{schemas,enums,grounding}.py`, `tests/unit/test_grounding.py`
