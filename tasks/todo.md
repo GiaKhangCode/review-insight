@@ -39,15 +39,16 @@ Default verification for every task: `uv run ruff check . && uv run ruff format 
   - Files: `evals/metrics.py`, `tests/unit/test_metrics.py`
   - 💡 multi-label evaluation, micro vs macro averaging
 
-- [ ] **T6: TF-IDF baseline and eval runner** (M) · deps: T4, T5
-  - Acceptance: `evals/baseline_tfidf.py` trains on train, tunes on dev, scores `test_500` · `evals/run.py --config X --split Y --limit N` writes `evals/results/<date>_<config>.json` with metrics and run metadata (git sha, config, seed)
+- [x] **T6: TF-IDF baseline and eval runner** (M) · deps: T4, T5
+  - Acceptance: `evals/baseline_tfidf.py` trains on train, tunes on dev, scores `test_500` · `evals/run.py --config X --split Y --limit N` writes `evals/results/<date>_<config>_<split>.json` with metrics and run metadata (git sha, config, seed)
   - Verify: baseline numbers are produced and are in a plausible range vs the paper (aspect F1 ≈ 0.8)
-  - Files: `evals/{baseline_tfidf,run}.py`, `evals/configs/baseline.yaml`
+  - Files: `evals/{baseline_tfidf,run}.py`, `evals/configs/baseline.yaml`, `tests/unit/test_{baseline_tfidf,run}.py`
+  - Result: `test_500` pair F1 ≈ 0.74, aspect F1 micro ≈ 0.85, p95 ≈ 6 ms, $0 (C tuned on dev minus `dev_100`)
   - 💡 baselines, experiment tracking
 
 - [ ] **T7: Zero-shot Gemini analyzer** (M) · deps: T6 · ⚠️ highest-risk task
   - Acceptance: list available Gemini models and record their rate limits in `docs/` · `prompts/analyze_v1.yaml` (delimited untrusted input) · `GeminiReviewAnalyzer` via LangChain `with_structured_output` · token usage and cost from `config/pricing.yaml` (filled from the official pricing page) · on-disk response cache for eval runs (re-running costs $0)
-  - Verify: `evals/run.py --config zeroshot_31 --split dev --limit 100` for both models · unit tests use a fake chat model
+  - Verify: `evals/run.py --config evals/configs/zeroshot_31.yaml --split dev_100` for both models · unit tests use a fake chat model
   - Files: `src/review_insight/llm/{analyzer,prompts,pricing}.py`, `prompts/analyze_v1.yaml`, `config/pricing.yaml`, `evals/configs/zeroshot_*.yaml`
   - 💡 structured output, prompt design, cost accounting
 
