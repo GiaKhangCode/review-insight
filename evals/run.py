@@ -2,21 +2,27 @@
 
 Usage:
     uv run python -m evals.run --config evals/configs/baseline.yaml --split test_500
-    uv run python -m evals.run --config evals/configs/baseline.yaml --split dev_100 --limit 20
+    uv run python -m evals.run --config evals/configs/zeroshot_31.yaml --split dev_100
 
 `--split` is a full split (dev, test) or a committed sample (dev_100, test_500, smoke_50).
 Results go to evals/results/<date>_<config>_<split>[_n<limit>].json, with the config,
 git sha and seed, so every number can be traced back to what produced it.
+
+LLM runs replay paid responses from evals/.cache/, so an interrupted run (timeout, quota)
+resumes for free: run the same command again.
 """
 
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
+import logging
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
@@ -33,7 +39,14 @@ from evals.metrics import (
     latency_percentiles,
     pair_scores,
 )
+from evals.model_cache import DEFAULT_CACHE_DIR, DiskCachedCall, ThrottledCall
+from review_insight.config import Settings
 from review_insight.data.visfd import GoldReview, Split, load_split
+from review_insight.llm.analyzer import ModelCall, ReviewAnalyzer, build_gemini_call
+from review_insight.llm.pricing import DEFAULT_PRICING_PATH, load_price_table
+from review_insight.llm.prompts import load_prompt
+
+logger = logging.getLogger(__name__)
 
 RAW_DIR = Path("data/raw/UIT-ViSFD")
 SAMPLES_PATH = Path("evals/data/samples.json")
@@ -62,17 +75,27 @@ class TuneParams(_Strict):
     exclude_sample: str | None = None
 
 
+class GeminiParams(_Strict):
+    model: str
+    prompt: str  # path to a prompts/*.yaml file, relative to the repo root
+    # 5 s between request starts = 12 RPM, under the free tier's 15 RPM (docs/GEMINI.md).
+    min_interval_s: float = Field(default=5.0, gt=0)
+
+
 class RunConfig(_Strict):
     name: str = Field(pattern=r"^[a-z0-9_]+$")  # used in the results file name
-    analyzer: Literal["tfidf"]
+    analyzer: Literal["tfidf", "gemini"]
     seed: int
     tfidf: TfidfParams | None = None
     tune: TuneParams | None = None
+    gemini: GeminiParams | None = None
 
     @model_validator(mode="after")
     def _analyzer_has_its_sections(self) -> Self:
         if self.analyzer == "tfidf" and (self.tfidf is None or self.tune is None):
             raise ValueError("analyzer 'tfidf' needs both a 'tfidf' and a 'tune' section")
+        if self.analyzer == "gemini" and self.gemini is None:
+            raise ValueError("analyzer 'gemini' needs a 'gemini' section")
         return self
 
 
@@ -208,6 +231,85 @@ def _fit_tfidf(
     return result.model, info
 
 
+@dataclass(frozen=True, slots=True)
+class _Prediction:
+    """One scored review, whatever produced it."""
+
+    pairs: frozenset[Pair]  # empty when the output was rejected: production would not serve it
+    latency_ms: float
+    cost_usd: float = 0.0
+    failure: str | None = None
+    cached: bool = False
+    evidence_total: int = 0
+    evidence_ungrounded: int = 0
+
+
+def _predict_tfidf(model: TfidfBaseline, gold: Sequence[GoldReview]) -> list[_Prediction]:
+    predictions = []
+    for review in gold:  # one review per call, like an API request, so latency is comparable
+        start = time.perf_counter()
+        [pairs] = model.predict([review.text])
+        predictions.append(_Prediction(pairs, (time.perf_counter() - start) * 1000))
+    return predictions
+
+
+async def _predict_llm(analyzer: ReviewAnalyzer, gold: Sequence[GoldReview]) -> list[_Prediction]:
+    predictions = []
+    # Sequential on purpose: the free tier's RPM is the bottleneck, not our concurrency.
+    for i, review in enumerate(gold, start=1):
+        analysis = await analyzer.analyze(review.text)
+        pairs = (
+            frozenset((item.aspect, item.sentiment) for item in analysis.result.aspects)
+            if analysis.result is not None
+            else frozenset()
+        )
+        predictions.append(
+            _Prediction(
+                pairs=pairs,
+                latency_ms=analysis.latency_ms,
+                cost_usd=analysis.cost_usd,
+                failure=analysis.failure,
+                cached=analysis.cached,
+                evidence_total=analysis.evidence_total,
+                evidence_ungrounded=analysis.evidence_ungrounded,
+            )
+        )
+        if i % 10 == 0 or i == len(gold):
+            hits = sum(p.cached for p in predictions)
+            failed = sum(p.failure is not None for p in predictions)
+            logger.info("%d/%d reviews (cache hits %d, rejected %d)", i, len(gold), hits, failed)
+    return predictions
+
+
+def _reliability(predictions: Sequence[_Prediction]) -> dict[str, Any]:
+    """SPEC §7.2 schema validity and evidence grounding, plus how much came from cache."""
+    n = len(predictions)
+    evidence = sum(p.evidence_total for p in predictions)
+    ungrounded = sum(p.evidence_ungrounded for p in predictions)
+    return {
+        "schema_valid_rate": round(sum(p.failure != "schema" for p in predictions) / n, 4),
+        "accepted_rate": round(sum(p.failure is None for p in predictions) / n, 4),
+        "evidence_grounding_rate": round(1 - ungrounded / evidence, 4) if evidence else None,
+        "failures": {
+            "schema": sum(p.failure == "schema" for p in predictions),
+            "ungrounded": sum(p.failure == "ungrounded" for p in predictions),
+        },
+        "cache_hits": sum(p.cached for p in predictions),
+    }
+
+
+def _real_model_call(params: GeminiParams, *, cache_dir: Path) -> ModelCall:
+    """Gemini behind a throttle, behind the disk cache: cache hits never wait or spend quota."""
+    settings = Settings()
+    gemini = build_gemini_call(
+        model=params.model,
+        api_key=settings.require_google_api_key(),
+        timeout_s=settings.llm_timeout_s,
+    )
+    throttled = ThrottledCall(gemini, min_interval_s=params.min_interval_s)
+    return DiskCachedCall(throttled, cache_dir=cache_dir, model=params.model)
+
+
 # --- Run ---------------------------------------------------------------------------------
 
 
@@ -221,6 +323,9 @@ def run(
     results_dir: Path,
     git_sha: str,
     today: date,
+    model_call: ModelCall | None = None,  # injected in tests; None = real Gemini + cache
+    pricing_path: Path = DEFAULT_PRICING_PATH,
+    cache_dir: Path = DEFAULT_CACHE_DIR,
 ) -> Path:
     gold = select_reviews(split, raw_dir=raw_dir, samples_path=samples_path, limit=limit)
 
@@ -233,15 +338,31 @@ def run(
             "score on a held-out sample or on test"
         )
 
-    model, info = _fit_tfidf(config, tuning, raw_dir=raw_dir)
+    info: dict[str, Any]
+    if config.gemini is not None:
+        prompt = load_prompt(Path(config.gemini.prompt))
+        prices = load_price_table(pricing_path)
+        call = model_call or _real_model_call(config.gemini, cache_dir=cache_dir)
+        analyzer = ReviewAnalyzer(call=call, prompt=prompt, prices=prices)
+        predictions = asyncio.run(_predict_llm(analyzer, gold))
+        info = {
+            "model": config.gemini.model,
+            "prompt": prompt.ref,
+            "prompt_fingerprint": prompt.fingerprint,
+            "pricing_retrieved": prices.retrieved.isoformat(),
+        }
+    else:
+        model, info = _fit_tfidf(config, tuning, raw_dir=raw_dir)
+        predictions = _predict_tfidf(model, gold)  # local CPU inference: no per-call cost
 
-    predictions: list[frozenset[Pair]] = []
-    latencies_ms: list[float] = []
-    for review in gold:  # one review per call, like an API request, so latency is comparable
-        start = time.perf_counter()
-        [prediction] = model.predict([review.text])
-        latencies_ms.append((time.perf_counter() - start) * 1000)
-        predictions.append(prediction)
+    metrics = score(
+        gold,
+        [p.pairs for p in predictions],
+        latencies_ms=[p.latency_ms for p in predictions],
+        total_cost_usd=sum(p.cost_usd for p in predictions),  # failed calls are billed too
+    )
+    if config.gemini is not None:
+        metrics["reliability"] = _reliability(predictions)
 
     result = {
         "run": {
@@ -254,8 +375,7 @@ def run(
         },
         "config": config.model_dump(mode="json"),
         "analyzer": info,
-        # Local CPU inference: no per-call API cost.
-        "metrics": score(gold, predictions, latencies_ms=latencies_ms, total_cost_usd=0.0),
+        "metrics": metrics,
     }
 
     suffix = "" if limit is None else f"_n{limit}"
@@ -297,6 +417,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.limit is not None and args.limit <= 0:
         parser.error("--limit must be positive")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
     path = run(
         load_config(args.config),
@@ -315,6 +436,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"aspect F1 micro    {detection['micro']['f1']:.4f}")
     print(f"aspect F1 macro    {detection['macro_f1']:.4f}")
     print(f"latency p50 / p95  {metrics['latency_ms']['p50']} / {metrics['latency_ms']['p95']} ms")
+    print(f"cost per 1k        ${metrics['cost_per_1k_usd']:.4f}")
+    if "reliability" in metrics:
+        reliability = metrics["reliability"]
+        print(f"schema valid       {reliability['schema_valid_rate']:.1%}")
+        print(f"accepted           {reliability['accepted_rate']:.1%}")
+        print(f"evidence grounded  {reliability['evidence_grounding_rate']}")
+        print(f"cache hits         {reliability['cache_hits']}")
     print(f"written to         {path}")
     return 0
 
