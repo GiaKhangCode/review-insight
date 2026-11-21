@@ -13,10 +13,10 @@ Default verification for every task: `uv run ruff check . && uv run ruff format 
   - Files: `pyproject.toml`, `.pre-commit-config.yaml`, `.gitignore`, `.gitattributes`, `.env.example`
   - 💡 reproducible environments, secret hygiene
 
-- [ ] **T2: App skeleton and CI** (S) · deps: T1
+- [x] **T2: App skeleton and CI** (S) · deps: T1
   - Acceptance: `create_app()` factory · `config.py` with pydantic-settings (fails fast on missing env) · `GET /healthz` → 200 · JSON logging · `.github/workflows/ci.yml` running lint, mypy and pytest on PRs
   - Verify: `uv run uvicorn review_insight.main:app` and `curl localhost:8000/healthz` · first PR shows CI green
-  - Files: `src/review_insight/{main,config}.py`, `observability/logging.py`, `tests/unit/test_health.py`, `.github/workflows/ci.yml`
+  - Files: `src/review_insight/{main,config}.py`, `observability/logging_config.py`, `tests/unit/test_{health,logging_config}.py`, `.github/workflows/ci.yml`
   - 💡 12-factor config
 
 ## Phase 1: Measure first
