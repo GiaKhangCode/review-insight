@@ -1,0 +1,25 @@
+# Gemini API prices used for cost accounting (SPEC §3, §7.2). Never hard-code prices in code.
+# Standard paid tier, USD per 1,000,000 tokens, text input. Paid prices are used even on the
+# free tier, so reported costs are what production would pay. See docs/GEMINI.md.
+#
+# Update this file (and docs/GEMINI.md) when Google changes prices. Old eval results keep the
+# cost they were computed with; the date below says which price list that was.
+
+source: https://ai.google.dev/gemini-api/docs/pricing
+retrieved: 2026-11-21
+currency: USD
+per_tokens: 1000000
+
+models:
+  gemini-3.1-flash-lite:
+    input: 0.25
+    cached_input: 0.025 # input tokens served from Gemini's context cache
+    output: 1.50 # includes thinking tokens
+  gemini-3.5-flash-lite:
+    input: 0.30
+    cached_input: 0.03
+    output: 2.50 # includes thinking tokens
+  gemini-embedding-2:
+    input: 0.20 # read from a page summary, not verbatim: re-verify in T8
+    cached_input: 0.20 # no caching for embeddings; same as input
+    output: 0.0 # embeddings have no output tokens
