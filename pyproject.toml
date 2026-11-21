@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi>=0.165.0",
     "pydantic-settings>=2.16.3",
+    "pyyaml>=6.0.4",
     "uvicorn[standard]>=0.54.0",
 ]
 
@@ -25,6 +26,7 @@ dev = [
     "pytest-cov>=6.0",
     "ruff>=0.8",
     "scikit-learn>=1.9.1",
+    "types-pyyaml>=6.0.12.20261113",
 ]
 
 [build-system]
@@ -73,6 +75,12 @@ files = ["src", "scripts", "evals"]
 strict = true
 warn_unreachable = true
 pretty = true
+
+[[tool.mypy.overrides]]
+# scikit-learn ships no type hints (no py.typed, no stubs package). Scoped to sklearn only:
+# its objects are typed as Any, so every other module stays fully strict.
+module = ["sklearn", "sklearn.*"]
+ignore_missing_imports = true
 
 # ---------------------------------------------------------------------------
 # Pytest + coverage
