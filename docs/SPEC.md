@@ -110,7 +110,8 @@ Aspects: `SCREEN, CAMERA, FEATURES, BATTERY, PERFORMANCE, STORAGE, DESIGN, PRICE
 
 **Source (verified 2026-11-21):** `https://github.com/LuongPhan/UIT-ViSFD/raw/main/UIT-ViSFD.zip` (≈940 KB). It contains `Train.csv` (7,786), `Dev.csv` (1,112) and `Test.csv` (2,224), with columns `index, comment, n_star, date_time, label`.
 
-- Label format: `{BATTERY#Positive};{CAMERA#Negative};`. The special label `{OTHERS};` means no aspect is mentioned, and maps to an empty `aspects` list.
+- Label format: `{BATTERY#Positive};{CAMERA#Negative};`. The special token `{OTHERS};` means "also talks about something outside the 10 aspects". It co-occurs with real aspects in about 20% of rows, so it is **ignored** when parsing. A row whose only token is `{OTHERS}` (115 in train) maps to an empty `aspects` list. *(Corrected 2026-11-21 after profiling the data: an earlier draft said OTHERS means "no aspect".)*
+- Dates are day-first (`9/7/2020` is 9 July 2020). About 11% of rows have relative dates (`2 tuần trước`) with no anchor; they are stored as `null`.
 - **Known imbalance** (train): `STORAGE` has only 91 labels in total and `SCREEN#Neutral` only 56. Macro-F1 is therefore noisy, which is why micro pair F1 is the primary metric and per-aspect support is always reported.
 - **Terms:** free for research use, and the paper must be cited (SA2SL, KSEM 2021). Commercial use requires contacting the authors. This is a non-commercial portfolio project, so the README cites the paper, and the raw data is **not** committed. `scripts/download_data.py` fetches it and checks its SHA-256.
 
