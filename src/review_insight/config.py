@@ -7,8 +7,9 @@ DATABASE_URL in T11, ...).
 """
 
 from functools import lru_cache
-from typing import Literal
+from typing import Literal, Self
 
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 AppEnv = Literal["local", "ci", "production"]
@@ -30,6 +31,32 @@ class Settings(BaseSettings):
 
     app_env: AppEnv = "local"
     log_level: LogLevel = "INFO"
+
+    # --- LLM (T7) ---
+    # SecretStr: shown as '**********' in repr, logs and dumps; read with get_secret_value().
+    # Optional so /healthz, unit tests and CI run without a key; required in production.
+    google_api_key: SecretStr | None = None
+    primary_model: str = "gemini-3.1-flash-lite"
+    fallback_model: str = "gemini-3.5-flash-lite"
+    llm_timeout_s: float = Field(default=15, gt=0, le=120)
+
+    @field_validator("google_api_key", mode="before")
+    @classmethod
+    def _blank_key_is_missing(cls, value: object) -> object:
+        # `.env.example` ships `GOOGLE_API_KEY=`; an empty value is not a key.
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @model_validator(mode="after")
+    def _production_needs_a_key(self) -> Self:
+        if self.app_env == "production" and self.google_api_key is None:
+            raise ValueError("GOOGLE_API_KEY must be set when APP_ENV=production")
+        return self
+
+    def require_google_api_key(self) -> SecretStr:
+        """The key, for code paths that call Gemini; a clear error if it is not configured."""
+        if self.google_api_key is None:
+            raise ValueError("GOOGLE_API_KEY is not set: add it to .env (see .env.example)")
+        return self.google_api_key
 
 
 @lru_cache

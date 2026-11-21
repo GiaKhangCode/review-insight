@@ -77,7 +77,10 @@ def test_json_formatter_keeps_traceback_inside_the_json_line() -> None:
 
 @pytest.mark.usefixtures("restore_root_logger")
 def test_configure_logging_uses_json_outside_local() -> None:
-    configure_logging(Settings(app_env="production", log_level="WARNING"))
+    # A valid production config needs a key (T7); a fake one is enough to build Settings.
+    configure_logging(
+        Settings(app_env="production", log_level="WARNING", google_api_key="test-key")
+    )
 
     root = logging.getLogger()
     assert root.level == logging.WARNING

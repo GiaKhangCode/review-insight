@@ -46,15 +46,26 @@ Default verification for every task: `uv run ruff check . && uv run ruff format 
   - Result: `test_500` pair F1 ≈ 0.74, aspect F1 micro ≈ 0.85, p95 ≈ 6 ms, $0 (C tuned on dev minus `dev_100`)
   - 💡 baselines, experiment tracking
 
-- [ ] **T7: Zero-shot Gemini analyzer** (M) · deps: T6 · ⚠️ highest-risk task
-  - Acceptance: list available Gemini models and record their rate limits in `docs/` · `prompts/analyze_v1.yaml` (delimited untrusted input) · `GeminiReviewAnalyzer` via LangChain `with_structured_output` · token usage and cost from `config/pricing.yaml` (filled from the official pricing page) · on-disk response cache for eval runs (re-running costs $0)
-  - Verify: `evals/run.py --config evals/configs/zeroshot_31.yaml --split dev_100` for both models · unit tests use a fake chat model
-  - Files: `src/review_insight/llm/{analyzer,prompts,pricing}.py`, `prompts/analyze_v1.yaml`, `config/pricing.yaml`, `evals/configs/zeroshot_*.yaml`
+- [x] **T7: Zero-shot Gemini analyzer** (M) · deps: T6 · ⚠️ highest-risk task
+  - Acceptance: list available Gemini models and record their rate limits in `docs/` · `prompts/analyze_v1.yaml` (delimited untrusted input) · `ReviewAnalyzer` via LangChain `with_structured_output` · token usage and cost from `config/pricing.yaml` (filled from the official pricing page) · on-disk response cache for eval runs (re-running costs $0)
+  - Verify: `evals/run.py --config evals/configs/zeroshot_31.yaml --split dev_100` for both models · unit tests use a fake model call
+  - Files: `src/review_insight/llm/{analyzer,prompts,pricing}.py`, `src/review_insight/config.py`, `prompts/analyze_v1.yaml`, `config/pricing.yaml`, `evals/{model_cache,run}.py`, `evals/configs/zeroshot_*.yaml`, `docs/GEMINI.md`
   - 💡 structured output, prompt design, cost accounting
 
 ### ✅ Checkpoint A: go/no-go (tag `v0.1.0`)
-- [ ] Baseline vs zero-shot (2 models) table on `dev_100`, with pair F1, cost per 1k and p95
-- [ ] Rate limits known; eval budget per day computed
+- [x] Baseline vs zero-shot (2 models) table on `dev_100`, with pair F1, cost per 1k and p95
+
+  | Config | Pair F1 | Aspect F1 micro / macro | Accepted | p50 / p95 | Cost per 1k |
+  |---|---|---|---|---|---|
+  | TF-IDF baseline | **0.752** | 0.868 / 0.755 | 100% | 5 ms / 8 ms | $0 |
+  | zero-shot 3.1 | 0.686 | 0.750 / 0.657 | 78% | 1.5 s / 5.8 s | $0.42 |
+  | zero-shot 3.5 | 0.729 | 0.807 / 0.773 | 88% | 1.5 s / 8.5 s | $0.59 |
+
+  - Rejected outputs score as empty predictions. On accepted outputs only, pair F1 is 0.806 (3.1) and 0.795 (3.5).
+  - Every schema failure (24 of 24) is a duplicated aspect: the model lists one entry per evidence span. Most ungrounded evidence (3.1) strips diacritics or joins spans with "...".
+  - p95 is above the 3 s target. It was measured on the free tier during 503 "high demand" periods.
+  - Transient 503/504 errors every ~10–20 requests; runs were resumed from the cache (retries are T10).
+- [x] Rate limits known; eval budget per day computed (`docs/GEMINI.md`)
 - [ ] **Review with you:** proceed as-is, adjust the prompt, or change model?
 
 ## Phase 2: Harden the LLM layer

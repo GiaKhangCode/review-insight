@@ -2,13 +2,19 @@
 
 import csv
 import json
+from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
 
 import pytest
+from langchain_core.messages import BaseMessage
 from pydantic import ValidationError
 
 from evals.run import RunConfig, load_config, run, score, select_reviews
+from review_insight.domain.enums import Aspect, Route, Sentiment, Urgency
+from review_insight.domain.schemas import AnalysisResult, AspectSentiment
+from review_insight.llm.analyzer import RawCall
+from review_insight.llm.pricing import TokenUsage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -239,3 +245,139 @@ def test_scoring_the_held_out_dev_sample_is_allowed(
     )
 
     assert path.exists()
+
+
+# --- LLM analyzer (gemini) ---------------------------------------------------------------
+
+_USAGE = TokenUsage(input_tokens=700, output_tokens=100)
+
+
+def _answer(*aspects: tuple[Aspect, Sentiment, str]) -> AnalysisResult:
+    return AnalysisResult(
+        aspects=[AspectSentiment(aspect=a, sentiment=s, evidence=e) for a, s, e in aspects],
+        urgency=Urgency.LOW,
+        route_to=Route.NONE,
+    )
+
+
+# One canned model answer per test review: right, schema failure, ungrounded, empty.
+_ANSWERS: dict[str, AnalysisResult | None] = {
+    "pin trâu dùng cả ngày": _answer((Aspect.BATTERY, Sentiment.POSITIVE, "pin trâu")),
+    "pin yếu sạc hoài": _answer((Aspect.BATTERY, Sentiment.NEGATIVE, "pin yếu")),
+    "camera chụp đẹp": _answer((Aspect.CAMERA, Sentiment.POSITIVE, "ảnh sắc nét")),  # invented
+    "shop giao hàng chậm": None,  # schema failure
+    "máy ổn": _answer(),
+}
+
+
+class ScriptedCall:
+    """Fake ModelCall: answers from _ANSWERS by the review text found in the prompt."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def __call__(self, messages: Sequence[BaseMessage]) -> RawCall:
+        self.calls += 1
+        prompt = str(messages[-1].content)
+        review = next(text for text in _ANSWERS if f"\n{text}\n" in prompt)
+        output = _ANSWERS[review]
+        return RawCall(
+            model="gemini-3.1-flash-lite",
+            output=output,
+            error=None if output is not None else "duplicate aspect(s): SER&ACC",
+            usage=_USAGE,
+            latency_ms=2000.0,
+        )
+
+
+@pytest.fixture
+def gemini_config() -> RunConfig:
+    return RunConfig.model_validate(
+        {
+            "name": "zeroshot_31",
+            "analyzer": "gemini",
+            "seed": 42,
+            "gemini": {
+                "model": "gemini-3.1-flash-lite",
+                "prompt": str(REPO_ROOT / "prompts/analyze_v1.yaml"),
+            },
+        }
+    )
+
+
+def _run_gemini(
+    config: RunConfig, tmp_path: Path, raw_dir: Path, samples_path: Path, split: str = "test"
+) -> dict[str, object]:
+    path = run(
+        config,
+        split=split,
+        limit=None,
+        raw_dir=raw_dir,
+        samples_path=samples_path,
+        results_dir=tmp_path / "results",
+        git_sha="abc1234",
+        today=date(2026, 11, 21),
+        model_call=ScriptedCall(),
+        pricing_path=REPO_ROOT / "config/pricing.yaml",
+    )
+    result: dict[str, object] = json.loads(path.read_text(encoding="utf-8"))
+    return result
+
+
+@pytest.mark.parametrize("name", ["zeroshot_31", "zeroshot_35"])
+def test_the_committed_zero_shot_configs_are_valid(name: str) -> None:
+    config = load_config(REPO_ROOT / f"evals/configs/{name}.yaml")
+
+    assert config.analyzer == "gemini"
+    assert config.gemini is not None
+    assert (REPO_ROOT / config.gemini.prompt).exists()
+
+
+def test_a_gemini_config_needs_its_section(gemini_config: RunConfig) -> None:
+    with pytest.raises(ValidationError):
+        RunConfig.model_validate(gemini_config.model_dump() | {"gemini": None})
+
+
+def test_llm_run_reports_reliability_cost_and_provenance(
+    tmp_path: Path, raw_dir: Path, samples_path: Path, gemini_config: RunConfig
+) -> None:
+    result = _run_gemini(gemini_config, tmp_path, raw_dir, samples_path)
+
+    metrics = result["metrics"]
+    assert isinstance(metrics, dict)
+    assert metrics["reliability"] == {
+        "schema_valid_rate": 0.8,  # 4 of 5 parsed
+        "accepted_rate": 0.6,  # 3 of 5 schema-valid AND grounded
+        "evidence_grounding_rate": 0.6667,  # 2 of 3 evidence spans found in the review
+        "failures": {"schema": 1, "ungrounded": 1},
+        "cache_hits": 0,
+    }
+    # 5 calls x (700 x $0.25 + 100 x $1.50) / 1M, scaled to 1,000 reviews; failures included.
+    assert metrics["cost_per_1k_usd"] == pytest.approx(0.325)
+    assert metrics["latency_ms"] == {"p50": 2000.0, "p95": 2000.0}
+    assert result["analyzer"] == {
+        "model": "gemini-3.1-flash-lite",
+        "prompt": "analyze_review@v1",
+        "prompt_fingerprint": result["analyzer"]["prompt_fingerprint"],
+        "pricing_retrieved": "2026-11-21",
+    }
+
+
+def test_rejected_outputs_count_as_predicting_nothing(
+    tmp_path: Path, raw_dir: Path, samples_path: Path, gemini_config: RunConfig
+) -> None:
+    # Production would not serve a rejected output, so the eval must not score it either.
+    result = _run_gemini(gemini_config, tmp_path, raw_dir, samples_path)
+
+    pair = result["metrics"]["pair"]
+    # TP: the two BATTERY reviews. FN: CAMERA (ungrounded) and SER&ACC (schema failure).
+    assert (pair["tp"], pair["fp"], pair["fn"]) == (2, 0, 2)
+
+
+def test_an_llm_config_may_be_scored_on_full_dev(
+    tmp_path: Path, raw_dir: Path, samples_path: Path, gemini_config: RunConfig
+) -> None:
+    # Nothing is tuned by the runner for LLM configs, so the leakage guard has nothing to block.
+    result = _run_gemini(gemini_config, tmp_path, raw_dir, samples_path, split="dev")
+
+    assert result["run"]["n"] == 10
