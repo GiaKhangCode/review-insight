@@ -12,6 +12,7 @@ dependencies = [
     "fastapi>=0.165.0",
     "langchain-core>=1.8.4",
     "langchain-google-genai>=4.5.2",
+    "langfuse>=5.2.0",
     "pydantic-settings>=2.16.3",
     "pyyaml>=6.0.4",
     "tenacity>=9.1.4",
@@ -63,11 +64,12 @@ select = [
 
 [tool.ruff.lint.isort]
 # Explicit, so import grouping never depends on whether a module exists yet.
-known-first-party = ["review_insight", "evals"]
+known-first-party = ["review_insight", "evals", "scripts"]
 
 [tool.ruff.lint.per-file-ignores]
 # `assert` is how pytest works; it is only banned in application code.
-"tests/**" = ["S101"]
+# Tests use fake credentials ("sk-lf-test"); real secrets are caught by gitleaks instead.
+"tests/**" = ["S101", "S105", "S106"]
 
 # ---------------------------------------------------------------------------
 # Mypy: static type checking, strict on application code

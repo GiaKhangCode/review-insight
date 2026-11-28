@@ -98,3 +98,17 @@ The star distribution of `test_500` matches the test split within 0.1 percentage
 3. **The official train/dev/test split is never re-split**, so results remain comparable with the paper (Bi-LSTM: ~84% aspect F1, ~63% sentiment F1).
 4. **Domain and time:** smartphone reviews from 2016–2020 on one retailer. Performance on other product categories or on current slang is not measured.
 5. **Annotation:** the gold labels come from the authors' annotation scheme. Disagreements between the LLM and gold labels are inspected manually in the error analysis (T20) before being called model errors.
+
+## 5. Where review text is sent
+
+The raw files stay in `data/raw/` (gitignored). Review text leaves the machine in three places,
+all private to this project and all within research use:
+
+| Destination | What | Why |
+|---|---|---|
+| Google Gemini API | Each review sent for analysis | The task itself. On the free tier, Google may use prompts to improve its products (see `docs/GEMINI.md`) |
+| `evals/.cache/` (local, gitignored) | Model responses, which can echo review text | Re-running evals for free |
+| Langfuse Cloud (private project) | Traces of real model calls; datasets `visfd-<split>` with the review and its gold labels | Tracing, prompt management, dataset runs (T9) |
+
+Rules: Langfuse datasets and traces are never made public (no public trace links, no shared
+datasets); the git repository never contains review text, only indices and aggregate metrics.

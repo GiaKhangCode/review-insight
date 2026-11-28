@@ -40,7 +40,15 @@ class Settings(BaseSettings):
     fallback_model: str = "gemini-3.5-flash-lite"
     llm_timeout_s: float = Field(default=15, gt=0, le=120)
 
-    @field_validator("google_api_key", mode="before")
+    # --- Langfuse and prompts (T9) ---
+    # Both keys set: tracing on, prompts fetched by label. Neither: off, local YAML prompts.
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: SecretStr | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+    # Which Langfuse prompt label to serve; must match a label exactly (case-sensitive).
+    prompt_label: str = Field(default="production", pattern=r"^[a-z0-9_-]+$")
+
+    @field_validator("google_api_key", "langfuse_public_key", "langfuse_secret_key", mode="before")
     @classmethod
     def _blank_key_is_missing(cls, value: object) -> object:
         # `.env.example` ships `GOOGLE_API_KEY=`; an empty value is not a key.
@@ -51,6 +59,19 @@ class Settings(BaseSettings):
         if self.app_env == "production" and self.google_api_key is None:
             raise ValueError("GOOGLE_API_KEY must be set when APP_ENV=production")
         return self
+
+    @model_validator(mode="after")
+    def _langfuse_keys_come_in_pairs(self) -> Self:
+        if (self.langfuse_public_key is None) != (self.langfuse_secret_key is None):
+            raise ValueError(
+                "set both LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY, or neither "
+                "(one without the other would silently disable tracing)"
+            )
+        return self
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        return self.langfuse_public_key is not None and self.langfuse_secret_key is not None
 
     def require_google_api_key(self) -> SecretStr:
         """The key, for code paths that call Gemini; a clear error if it is not configured."""

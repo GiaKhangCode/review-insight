@@ -28,9 +28,11 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
 import yaml
+from langfuse import Langfuse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from evals.baseline_tfidf import TfidfBaseline, tune_c
+from evals.langfuse_runs import DatasetsClient, log_dataset_run, pairs_json
 from evals.metrics import (
     PRF,
     Pair,
@@ -43,9 +45,10 @@ from evals.model_cache import DEFAULT_CACHE_DIR, DiskCachedCall, ThrottledCall
 from review_insight.config import Settings
 from review_insight.data.visfd import GoldReview, Split, load_split
 from review_insight.llm.analyzer import ModelCall, ReviewAnalyzer, build_gemini_call
-from review_insight.llm.pricing import DEFAULT_PRICING_PATH, load_price_table
+from review_insight.llm.pricing import DEFAULT_PRICING_PATH, PriceTable, load_price_table
 from review_insight.llm.prompts import load_prompt
 from review_insight.llm.resilience import RetryingCall
+from review_insight.observability.langfuse import TracedCall, build_langfuse
 
 logger = logging.getLogger(__name__)
 
@@ -314,12 +317,14 @@ def _reliability(predictions: Sequence[_Prediction]) -> dict[str, Any]:
     }
 
 
-def _real_model_call(params: GeminiParams, *, cache_dir: Path) -> ModelCall:
-    """Cache( Retry( Throttle( Gemini ) ) ).
+def _real_model_call(
+    params: GeminiParams, *, cache_dir: Path, langfuse: Langfuse | None, prices: PriceTable
+) -> ModelCall:
+    """Cache( Trace( Retry( Throttle( Gemini ) ) ) ).
 
-    Cache outermost: hits never wait or spend quota. Retry outside the throttle: every
-    retry waits its turn, so retries cannot burst past the RPM limit. No fallback model:
-    an eval run measures one model.
+    Cache outermost: hits never wait or spend quota. Trace inside the cache: Langfuse sees
+    only real API calls, so its cost totals are money actually spent. Retry outside the
+    throttle: every retry waits its turn. No fallback model: an eval run measures one model.
     """
     settings = Settings()
     gemini = build_gemini_call(
@@ -327,8 +332,43 @@ def _real_model_call(params: GeminiParams, *, cache_dir: Path) -> ModelCall:
         api_key=settings.require_google_api_key(),
         timeout_s=settings.llm_timeout_s,
     )
-    throttled = ThrottledCall(gemini, min_interval_s=params.min_interval_s)
-    return DiskCachedCall(RetryingCall(throttled), cache_dir=cache_dir, model=params.model)
+    call: ModelCall = RetryingCall(ThrottledCall(gemini, min_interval_s=params.min_interval_s))
+    if langfuse is not None:
+        call = TracedCall(call, langfuse=langfuse, prices=prices)
+    return DiskCachedCall(call, cache_dir=cache_dir, model=params.model)
+
+
+def _log_to_langfuse(
+    langfuse: DatasetsClient,
+    *,
+    split: str,
+    gold: Sequence[GoldReview],
+    predictions: Sequence[_Prediction],
+    metrics: dict[str, Any],
+    run_name: str,
+    metadata: dict[str, str],
+    is_llm: bool,
+) -> None:
+    """Best effort: a Langfuse problem is logged, never allowed to lose the results file."""
+    outputs: dict[int, dict[str, Any]] = {}
+    for review, prediction in zip(gold, predictions, strict=True):
+        outputs[review.index] = {"aspects": pairs_json(prediction.pairs)}
+        if is_llm:
+            outputs[review.index]["failure"] = prediction.failure
+    try:
+        url = log_dataset_run(
+            langfuse,
+            split=split,
+            gold=gold,
+            outputs=outputs,
+            metrics=metrics,
+            run_name=run_name,
+            metadata=metadata,
+        )
+    except Exception as exc:  # observability must not fail the eval it observes
+        logger.warning("could not log the run to Langfuse: %s", exc)
+        return
+    logger.info("Langfuse dataset run: %s", url)
 
 
 # --- Run ---------------------------------------------------------------------------------
@@ -347,6 +387,7 @@ def run(
     model_call: ModelCall | None = None,  # injected in tests; None = real Gemini + cache
     pricing_path: Path = DEFAULT_PRICING_PATH,
     cache_dir: Path = DEFAULT_CACHE_DIR,
+    langfuse: Langfuse | None = None,  # None: no tracing, no dataset run
 ) -> Path:
     gold = select_reviews(split, raw_dir=raw_dir, samples_path=samples_path, limit=limit)
 
@@ -363,7 +404,9 @@ def run(
     if config.gemini is not None:
         prompt = load_prompt(Path(config.gemini.prompt))
         prices = load_price_table(pricing_path)
-        call = model_call or _real_model_call(config.gemini, cache_dir=cache_dir)
+        call = model_call or _real_model_call(
+            config.gemini, cache_dir=cache_dir, langfuse=langfuse, prices=prices
+        )
         analyzer = ReviewAnalyzer(
             call=call, prompt=prompt, prices=prices, repair=config.gemini.repair
         )
@@ -406,6 +449,22 @@ def run(
     results_dir.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="\n") as f:
         f.write(json.dumps(result, indent=2, ensure_ascii=False) + "\n")
+
+    # Only complete runs: a --limit run is a quick check, not a result to compare.
+    if langfuse is not None and limit is None:
+        metadata = {"git_sha": git_sha, "config": config.name, "results_file": path.name}
+        if config.gemini is not None:
+            metadata |= {"prompt": str(info["prompt"]), "model": config.gemini.model}
+        _log_to_langfuse(
+            langfuse,
+            split=split,
+            gold=gold,
+            predictions=predictions,
+            metrics=metrics,
+            run_name=path.stem,  # the results file and the dataset run share a name
+            metadata=metadata,
+            is_llm=config.gemini is not None,
+        )
     return path
 
 
@@ -442,16 +501,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--limit must be positive")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
-    path = run(
-        load_config(args.config),
-        split=args.split,
-        limit=args.limit,
-        raw_dir=RAW_DIR,
-        samples_path=SAMPLES_PATH,
-        results_dir=RESULTS_DIR,
-        git_sha=current_git_sha(),
-        today=date.today(),
-    )
+    langfuse = build_langfuse(Settings())  # None when the keys are not configured
+    try:
+        path = run(
+            load_config(args.config),
+            split=args.split,
+            limit=args.limit,
+            raw_dir=RAW_DIR,
+            samples_path=SAMPLES_PATH,
+            results_dir=RESULTS_DIR,
+            git_sha=current_git_sha(),
+            today=date.today(),
+            langfuse=langfuse,
+        )
+    finally:
+        if langfuse is not None:
+            langfuse.shutdown()  # flush buffered traces before the process exits
 
     metrics = json.loads(path.read_text(encoding="utf-8"))["metrics"]
     detection = metrics["aspect_detection"]
