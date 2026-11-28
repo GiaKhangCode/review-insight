@@ -2,6 +2,7 @@
 
 import csv
 import json
+import logging
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
@@ -418,3 +419,112 @@ def test_repair_is_reported_separately_from_first_try_quality(
     assert (pair["tp"], pair["fp"], pair["fn"]) == (4, 0, 0)
     # 7 calls (5 first + 2 repairs) for 5 reviews: repairs are part of the cost.
     assert metrics["cost_per_1k_usd"] == pytest.approx(7 * 0.000325 / 5 * 1000)
+
+
+# --- Langfuse dataset runs (T9) ----------------------------------------------------------
+
+
+class RecordingLangfuse:
+    """Records what the runner sends; the logging itself is tested in test_langfuse_runs."""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.fail = fail
+        self.items: dict[str, list[dict[str, object]]] = {}
+        self.experiments: list[dict[str, object]] = []
+
+    def create_dataset(self, *, name: str, **_: object) -> None:
+        if self.fail:
+            raise ConnectionError("langfuse is down")
+        self.items.setdefault(name, [])
+
+    def create_dataset_item(self, *, dataset_name: str, **item: object) -> None:
+        self.items[dataset_name].append(item)
+
+    def get_dataset(self, name: str) -> "RecordingLangfuse":
+        return self
+
+    def run_experiment(self, **kwargs: object) -> object:
+        self.experiments.append(kwargs)
+        return type("Result", (), {"dataset_run_url": "https://lf.example/run/1"})()
+
+
+def _run_with(
+    config: RunConfig,
+    tmp_path: Path,
+    raw_dir: Path,
+    samples_path: Path,
+    langfuse: RecordingLangfuse,
+    limit: int | None = None,
+) -> Path:
+    return run(
+        config,
+        split="test",
+        limit=limit,
+        raw_dir=raw_dir,
+        samples_path=samples_path,
+        results_dir=tmp_path / "results",
+        git_sha="abc1234",
+        today=date(2026, 11, 28),
+        model_call=ScriptedCall(),
+        pricing_path=REPO_ROOT / "config/pricing.yaml",
+        langfuse=langfuse,
+    )
+
+
+def test_an_llm_run_is_logged_as_a_langfuse_dataset_run(
+    tmp_path: Path, raw_dir: Path, samples_path: Path, gemini_config: RunConfig
+) -> None:
+    langfuse = RecordingLangfuse()
+
+    path = _run_with(gemini_config, tmp_path, raw_dir, samples_path, langfuse)
+
+    assert len(langfuse.items["visfd-test"]) == 5
+    [experiment] = langfuse.experiments
+    assert experiment["run_name"] == path.stem  # same name as the results file
+    metadata = experiment["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["git_sha"] == "abc1234"
+    assert metadata["config"] == "zeroshot_31"
+    assert metadata["prompt"] == "analyze_review@v1"
+
+
+def test_the_baseline_is_logged_too_for_side_by_side_comparison(
+    tmp_path: Path, raw_dir: Path, samples_path: Path, config: RunConfig
+) -> None:
+    langfuse = RecordingLangfuse()
+
+    _run_with(config, tmp_path, raw_dir, samples_path, langfuse)
+
+    [experiment] = langfuse.experiments
+    metadata = experiment["metadata"]
+    assert isinstance(metadata, dict)
+    assert metadata["config"] == "baseline_tfidf"
+
+
+def test_a_partial_run_is_not_logged(
+    tmp_path: Path, raw_dir: Path, samples_path: Path, gemini_config: RunConfig
+) -> None:
+    # --limit runs are quick checks; logging them would put a partial run (and a partial
+    # dataset) next to real ones.
+    langfuse = RecordingLangfuse()
+
+    _run_with(gemini_config, tmp_path, raw_dir, samples_path, langfuse, limit=2)
+
+    assert langfuse.experiments == []
+    assert langfuse.items == {}
+
+
+def test_langfuse_failures_never_lose_the_results_file(
+    tmp_path: Path,
+    raw_dir: Path,
+    samples_path: Path,
+    gemini_config: RunConfig,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="evals.run"):
+        path = _run_with(
+            gemini_config, tmp_path, raw_dir, samples_path, RecordingLangfuse(fail=True)
+        )
+
+    assert path.exists()  # the eval (and the money spent on it) is kept
+    assert "langfuse is down" in caplog.text
