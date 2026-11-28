@@ -8,5 +8,6 @@ seed: 42 # unused by the LLM (no sampling control on newer models); kept for the
 
 gemini:
   model: gemini-3.5-flash-lite
-  prompt: prompts/analyze_v1.yaml
+  prompt: prompts/analyze_v2.yaml
   min_interval_s: 5.0 # 12 RPM, under the 15 RPM free-tier limit (docs/GEMINI.md)
+  repair: true # one repair retry for rejected answers; first-try quality is reported too

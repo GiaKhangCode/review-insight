@@ -270,17 +270,25 @@ _ANSWERS: dict[str, AnalysisResult | None] = {
 }
 
 
+# What a repair retry gets back: the two rejected reviews, now answered correctly.
+_REPAIRED: dict[str, AnalysisResult] = {
+    "camera chụp đẹp": _answer((Aspect.CAMERA, Sentiment.POSITIVE, "camera chụp đẹp")),
+    "shop giao hàng chậm": _answer((Aspect.SER_ACC, Sentiment.NEGATIVE, "giao hàng chậm")),
+}
+
+
 class ScriptedCall:
-    """Fake ModelCall: answers from _ANSWERS by the review text found in the prompt."""
+    """Fake ModelCall: answers by the review found in the prompt; repairs succeed."""
 
     def __init__(self) -> None:
         self.calls = 0
 
     async def __call__(self, messages: Sequence[BaseMessage]) -> RawCall:
         self.calls += 1
-        prompt = str(messages[-1].content)
+        prompt = "\n".join(str(m.content) for m in messages)
         review = next(text for text in _ANSWERS if f"\n{text}\n" in prompt)
-        output = _ANSWERS[review]
+        is_repair = "previous answer was rejected" in str(messages[-1].content)
+        output = _REPAIRED[review] if is_repair else _ANSWERS[review]
         return RawCall(
             model="gemini-3.1-flash-lite",
             output=output,
@@ -300,6 +308,7 @@ def gemini_config() -> RunConfig:
             "gemini": {
                 "model": "gemini-3.1-flash-lite",
                 "prompt": str(REPO_ROOT / "prompts/analyze_v1.yaml"),
+                "repair": False,  # first-try behaviour; repair has its own test below
             },
         }
     )
@@ -345,9 +354,15 @@ def test_llm_run_reports_reliability_cost_and_provenance(
 
     metrics = result["metrics"]
     assert isinstance(metrics, dict)
-    assert metrics["reliability"] == {
+    first_try = {
         "schema_valid_rate": 0.8,  # 4 of 5 parsed
         "accepted_rate": 0.6,  # 3 of 5 schema-valid AND grounded
+    }
+    assert metrics["reliability"] == {
+        "first_try": first_try,
+        "after_repair": first_try,  # repair is off in this config
+        "repaired": 0,
+        "repair_calls": 0,
         "evidence_grounding_rate": 0.6667,  # 2 of 3 evidence spans found in the review
         "failures": {"schema": 1, "ungrounded": 1},
         "cache_hits": 0,
@@ -381,3 +396,25 @@ def test_an_llm_config_may_be_scored_on_full_dev(
     result = _run_gemini(gemini_config, tmp_path, raw_dir, samples_path, split="dev")
 
     assert result["run"]["n"] == 10
+
+
+def test_repair_is_reported_separately_from_first_try_quality(
+    tmp_path: Path, raw_dir: Path, samples_path: Path, gemini_config: RunConfig
+) -> None:
+    assert gemini_config.gemini is not None
+    gemini = gemini_config.gemini.model_copy(update={"repair": True})
+    config = gemini_config.model_copy(update={"gemini": gemini})
+
+    result = _run_gemini(config, tmp_path, raw_dir, samples_path)
+
+    metrics = result["metrics"]
+    assert isinstance(metrics, dict)
+    reliability = metrics["reliability"]
+    # Same first answers as without repair: the repair cannot hide first-try quality.
+    assert reliability["first_try"] == {"schema_valid_rate": 0.8, "accepted_rate": 0.6}
+    assert reliability["after_repair"] == {"schema_valid_rate": 1.0, "accepted_rate": 1.0}
+    assert (reliability["repaired"], reliability["repair_calls"]) == (2, 2)
+    pair = metrics["pair"]
+    assert (pair["tp"], pair["fp"], pair["fn"]) == (4, 0, 0)
+    # 7 calls (5 first + 2 repairs) for 5 reviews: repairs are part of the cost.
+    assert metrics["cost_per_1k_usd"] == pytest.approx(7 * 0.000325 / 5 * 1000)

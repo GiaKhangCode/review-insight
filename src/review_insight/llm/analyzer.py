@@ -4,7 +4,8 @@ Three layers, each replaceable on its own:
 - `ReviewAnalyzer`: renders the prompt, prices the call, checks evidence grounding;
 - `ModelCall`: any async callable from messages to a `RawCall` (the port);
 - `LangChainModelCall`: the adapter over `with_structured_output(..., include_raw=True)`.
-Caching and throttling (evals) are `ModelCall` wrappers, so the analyzer never changes.
+Caching, throttling, retries and fallback are `ModelCall` wrappers, so the analyzer never
+changes. A rejected answer gets one repair retry: the same conversation plus the reason.
 """
 
 import time
@@ -12,17 +13,24 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import Runnable
 from langchain_google_genai import ChatGoogleGenerativeAI
 from pydantic import SecretStr
 
 from review_insight.domain.grounding import UngroundedEvidenceError, validate_grounded
 from review_insight.domain.schemas import AnalysisResult
+from review_insight.llm.errors import InvalidLLMOutput
 from review_insight.llm.pricing import PriceTable, TokenUsage
-from review_insight.llm.prompts import PromptBundle
+from review_insight.llm.prompts import PromptBundle, sanitize_review
 
 Failure = Literal["schema", "ungrounded"]
+
+_REPAIR_INSTRUCTION = (
+    "Your previous answer was rejected: {error}\n"
+    "Analyze the same review again and return a corrected answer that follows every "
+    "instruction."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,64 +54,96 @@ class Analysis:
     """Outcome of analyzing one review. Failures are data: a failed call is still billed."""
 
     result: AnalysisResult | None  # set only if schema-valid AND every evidence is grounded
-    failure: Failure | None
-    error: str | None  # worded for the LLM: reused by the repair retry (T8)
-    model: str
+    failure: Failure | None  # of the final attempt: what the caller gets
+    first_failure: Failure | None  # of the first attempt: for first-try quality metrics
+    attempts: int  # 1, or 2 when a repair was attempted
+    error: str | None  # worded for the LLM, so it can be sent back as a repair instruction
+    model: str  # model that served the final attempt
     prompt_ref: str
-    usage: TokenUsage
+    usage: TokenUsage  # summed over attempts: every attempt is billed
     cost_usd: float
-    latency_ms: float
-    cached: bool
-    evidence_total: int  # evidence spans in the schema-valid output
+    latency_ms: float  # summed over attempts: the caller waited for all of them
+    cached: bool  # True only if every attempt was replayed from a cache
+    evidence_total: int  # evidence spans in the final schema-valid output
+    evidence_ungrounded: int
+
+    def unwrap(self) -> AnalysisResult:
+        """The accepted result, or `InvalidLLMOutput` (for callers that want exceptions)."""
+        if self.result is None:
+            raise InvalidLLMOutput(self.failure or "schema", self.error or "no output")
+        return self.result
+
+
+@dataclass(frozen=True, slots=True)
+class _Attempt:
+    raw: RawCall
+    cost_usd: float
+    result: AnalysisResult | None
+    failure: Failure | None
+    error: str | None
+    evidence_total: int
     evidence_ungrounded: int
 
 
 class ReviewAnalyzer:
-    def __init__(self, *, call: ModelCall, prompt: PromptBundle, prices: PriceTable) -> None:
+    def __init__(
+        self, *, call: ModelCall, prompt: PromptBundle, prices: PriceTable, repair: bool = True
+    ) -> None:
         self._call = call
         self._prompt = prompt
         self._prices = prices
+        self._repair = repair
 
     async def analyze(self, text: str) -> Analysis:
-        raw = await self._call(self._prompt.render(text))
+        messages = self._prompt.render(text)
+        first = await self._attempt(messages, text)
+        if first.failure is None or not self._repair:
+            return self._combine(first)
+
+        # One repair: the same conversation plus the rejection reason. The reason echoes
+        # model output (which may echo the review), so it is untrusted and sanitized too.
+        reason = sanitize_review(first.error or "the answer was rejected")
+        repair = HumanMessage(content=_REPAIR_INSTRUCTION.format(error=reason))
+        second = await self._attempt([*messages, repair], text)
+        return self._combine(first, second)
+
+    async def _attempt(self, messages: Sequence[BaseMessage], text: str) -> _Attempt:
+        raw = await self._call(messages)
         # Priced first: an unknown model is a configuration error and must stop the run.
         cost = self._prices.cost_usd(raw.model, raw.usage)
 
         if raw.output is None:
             error = raw.error or "the model returned no structured output"
-            return self._outcome(raw, cost, None, "schema", error, total=0, ungrounded=0)
+            return _Attempt(raw, cost, None, "schema", error, 0, 0)
 
         total = len(raw.output.aspects)
         try:
             # Checked against the original text: evidence must be what the customer wrote.
             validate_grounded(raw.output, source_text=text)
         except UngroundedEvidenceError as exc:
-            missing = len(exc.ungrounded)
-            return self._outcome(raw, cost, None, "ungrounded", str(exc), total, missing)
-        return self._outcome(raw, cost, raw.output, None, None, total=total, ungrounded=0)
+            return _Attempt(raw, cost, None, "ungrounded", str(exc), total, len(exc.ungrounded))
+        return _Attempt(raw, cost, raw.output, None, None, total, 0)
 
-    def _outcome(
-        self,
-        raw: RawCall,
-        cost: float,
-        result: AnalysisResult | None,
-        failure: Failure | None,
-        error: str | None,
-        total: int,
-        ungrounded: int,
-    ) -> Analysis:
+    def _combine(self, *attempts: _Attempt) -> Analysis:
+        first, final = attempts[0], attempts[-1]
         return Analysis(
-            result=result,
-            failure=failure,
-            error=error,
-            model=raw.model,
+            result=final.result,
+            failure=final.failure,
+            first_failure=first.failure,
+            attempts=len(attempts),
+            error=final.error,
+            model=final.raw.model,
             prompt_ref=self._prompt.ref,
-            usage=raw.usage,
-            cost_usd=cost,
-            latency_ms=raw.latency_ms,
-            cached=raw.cached,
-            evidence_total=total,
-            evidence_ungrounded=ungrounded,
+            usage=TokenUsage(
+                input_tokens=sum(a.raw.usage.input_tokens for a in attempts),
+                output_tokens=sum(a.raw.usage.output_tokens for a in attempts),
+                cached_input_tokens=sum(a.raw.usage.cached_input_tokens for a in attempts),
+            ),
+            cost_usd=sum(a.cost_usd for a in attempts),
+            latency_ms=sum(a.raw.latency_ms for a in attempts),
+            cached=all(a.raw.cached for a in attempts),
+            evidence_total=final.evidence_total,
+            evidence_ungrounded=final.evidence_ungrounded,
         )
 
 

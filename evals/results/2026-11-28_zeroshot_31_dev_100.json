@@ -1,0 +1,167 @@
+{
+  "run": {
+    "split": "dev_100",
+    "limit": null,
+    "n": 100,
+    "git_sha": "52735c4",
+    "date": "2026-11-28",
+    "seed": 42
+  },
+  "config": {
+    "name": "zeroshot_31",
+    "analyzer": "gemini",
+    "seed": 42,
+    "tfidf": null,
+    "tune": null,
+    "gemini": {
+      "model": "gemini-3.1-flash-lite",
+      "prompt": "prompts/analyze_v2.yaml",
+      "min_interval_s": 5.0,
+      "repair": true
+    }
+  },
+  "analyzer": {
+    "model": "gemini-3.1-flash-lite",
+    "prompt": "analyze_review@v2",
+    "prompt_fingerprint": "bd1a2871c290",
+    "pricing_retrieved": "2026-11-21"
+  },
+  "metrics": {
+    "pair": {
+      "precision": 0.7853,
+      "recall": 0.7803,
+      "f1": 0.7827,
+      "support": 314,
+      "tp": 245,
+      "fp": 67,
+      "fn": 69
+    },
+    "aspect_detection": {
+      "micro": {
+        "precision": 0.8654,
+        "recall": 0.8599,
+        "f1": 0.8626,
+        "support": 314,
+        "tp": 270,
+        "fp": 42,
+        "fn": 44
+      },
+      "macro_f1": 0.8373,
+      "per_aspect": {
+        "SCREEN": {
+          "precision": 0.6875,
+          "recall": 0.7333,
+          "f1": 0.7097,
+          "support": 15,
+          "tp": 11,
+          "fp": 5,
+          "fn": 4
+        },
+        "CAMERA": {
+          "precision": 0.9444,
+          "recall": 0.9714,
+          "f1": 0.9577,
+          "support": 35,
+          "tp": 34,
+          "fp": 2,
+          "fn": 1
+        },
+        "FEATURES": {
+          "precision": 0.697,
+          "recall": 0.7419,
+          "f1": 0.7188,
+          "support": 31,
+          "tp": 23,
+          "fp": 10,
+          "fn": 8
+        },
+        "BATTERY": {
+          "precision": 0.963,
+          "recall": 0.9811,
+          "f1": 0.972,
+          "support": 53,
+          "tp": 52,
+          "fp": 2,
+          "fn": 1
+        },
+        "PERFORMANCE": {
+          "precision": 0.9464,
+          "recall": 0.9298,
+          "f1": 0.9381,
+          "support": 57,
+          "tp": 53,
+          "fp": 3,
+          "fn": 4
+        },
+        "STORAGE": {
+          "precision": 0.6667,
+          "recall": 1.0,
+          "f1": 0.8,
+          "support": 2,
+          "tp": 2,
+          "fp": 1,
+          "fn": 0
+        },
+        "DESIGN": {
+          "precision": 0.9091,
+          "recall": 0.7692,
+          "f1": 0.8333,
+          "support": 13,
+          "tp": 10,
+          "fp": 1,
+          "fn": 3
+        },
+        "PRICE": {
+          "precision": 0.9048,
+          "recall": 0.8636,
+          "f1": 0.8837,
+          "support": 22,
+          "tp": 19,
+          "fp": 2,
+          "fn": 3
+        },
+        "GENERAL": {
+          "precision": 0.8136,
+          "recall": 0.7742,
+          "f1": 0.7934,
+          "support": 62,
+          "tp": 48,
+          "fp": 11,
+          "fn": 14
+        },
+        "SER&ACC": {
+          "precision": 0.7826,
+          "recall": 0.75,
+          "f1": 0.766,
+          "support": 24,
+          "tp": 18,
+          "fp": 5,
+          "fn": 6
+        }
+      }
+    },
+    "latency_ms": {
+      "p50": 2327.6,
+      "p95": 11081.1
+    },
+    "cost_per_1k_usd": 0.4860874999999999,
+    "reliability": {
+      "first_try": {
+        "schema_valid_rate": 0.93,
+        "accepted_rate": 0.92
+      },
+      "after_repair": {
+        "schema_valid_rate": 1.0,
+        "accepted_rate": 0.97
+      },
+      "repaired": 5,
+      "repair_calls": 8,
+      "evidence_grounding_rate": 0.9815,
+      "failures": {
+        "schema": 0,
+        "ungrounded": 3
+      },
+      "cache_hits": 49
+    }
+  }
+}

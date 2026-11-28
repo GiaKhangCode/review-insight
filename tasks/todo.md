@@ -64,16 +64,30 @@ Default verification for every task: `uv run ruff check . && uv run ruff format 
   - Rejected outputs score as empty predictions. On accepted outputs only, pair F1 is 0.806 (3.1) and 0.795 (3.5).
   - Every schema failure (24 of 24) is a duplicated aspect: the model lists one entry per evidence span. Most ungrounded evidence (3.1) strips diacritics or joins spans with "...".
   - p95 is above the 3 s target. It was measured on the free tier during 503 "high demand" periods.
-  - Transient 503/504 errors every ~10–20 requests; runs were resumed from the cache (retries are T10).
+  - Transient 503/504 errors every ~10–20 requests; runs were resumed from the cache (retries are T8).
 - [x] Rate limits known; eval budget per day computed (`docs/GEMINI.md`)
-- [ ] **Review with you:** proceed as-is, adjust the prompt, or change model?
+- [x] **Review with you** (2026-11-28): **go, adjust the prompt.** Keep the contract (one entry per aspect) and both models. T8 adds prompt v2 (merge spans of one aspect into one entry; copy evidence with its diacritics exactly as written) and the repair retry. Prompts are tuned on `dev_100` only. Rejected: changing the contract to a list of evidence spans (revisit if duplicates persist after T8); switching the primary model now (the §7.3 rule decides after all configs run).
 
 ## Phase 2: Harden the LLM layer
 
-- [ ] **T8: Retries, timeout, fallback and repair** (S) · deps: T7
-  - Acceptance: tenacity with exponential backoff and jitter on 429/5xx (max 3) · 15 s timeout · fallback model after exhaustion · one repair retry when grounding or schema fails · typed errors `LLMUnavailable`, `InvalidLLMOutput`
-  - Verify: unit tests with fake models that simulate 429, timeout and invalid JSON
-  - Files: `src/review_insight/llm/{resilience,analyzer,errors}.py`, `tests/unit/test_resilience.py`
+- [x] **T8: Retries, timeout, fallback and repair** (S) · deps: T7
+  - Acceptance: tenacity with exponential backoff and jitter on 429/5xx (max 3) · 15 s timeout · fallback model after exhaustion · one repair retry when grounding or schema fails · typed errors `LLMUnavailable`, `InvalidLLMOutput` · `prompts/analyze_v2.yaml` (from Checkpoint A) · eval reports schema validity on the first try and after repair
+  - Verify: unit tests with fake models that simulate 429, timeout and invalid JSON · zero-shot v2 + repair on `dev_100` for both models, compared with v1
+  - Files: `src/review_insight/llm/{resilience,analyzer,errors}.py`, `prompts/analyze_v2.yaml`, `evals/run.py`, `tests/unit/test_resilience.py`
+  - Result on `dev_100` (2026-11-28):
+
+    | Config | Prompt | Pair F1 | Aspect F1 micro / macro | Accepted (first try → after repair) | p50 / p95 | Cost per 1k |
+    |---|---|---|---|---|---|---|
+    | TF-IDF baseline | n/a | 0.752 | 0.868 / 0.755 | 100% | 5 ms / 8 ms | $0 |
+    | zero-shot 3.1 | v1 | 0.686 | 0.750 / 0.657 | 78% (no repair) | 1.5 s / 5.8 s | $0.42 |
+    | zero-shot 3.5 | v1 | 0.729 | 0.807 / 0.773 | 88% (no repair) | 1.5 s / 8.5 s | $0.59 |
+    | zero-shot 3.1 | v2 | 0.783 | 0.863 / 0.837 | 92% → 97% | 2.3 s / 11.1 s | $0.49 |
+    | zero-shot 3.5 | v2 | **0.809** | **0.890 / 0.866** | 96% → 100% | 1.0 s / 1.7 s | $0.67 |
+
+    - Prompt v2 alone lifts first-try acceptance from 78% to 92% (3.1) and from 88% to 96% (3.5). Repair then fixes 5 of 8 (3.1) and 4 of 4 (3.5).
+    - Both zero-shot configs now beat the baseline on pair F1, and on macro F1 by a wide margin.
+    - Latency on the free tier is noisy: 3.1's p95 of 11 s includes slow responses during 503 periods. It must be re-measured before the §7.3 selection.
+    - Retries absorbed 429/503/504 errors; one 3.1 run still hit `LLMUnavailable` after 3 attempts and resumed from the cache. A 429 response carries a `retryDelay` (e.g. 38 s) that the backoff does not read yet.
   - 💡 failure modes of LLM APIs
 
 - [ ] **T9: Langfuse tracing and prompt management** (M) · deps: T7

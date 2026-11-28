@@ -45,6 +45,7 @@ from review_insight.data.visfd import GoldReview, Split, load_split
 from review_insight.llm.analyzer import ModelCall, ReviewAnalyzer, build_gemini_call
 from review_insight.llm.pricing import DEFAULT_PRICING_PATH, load_price_table
 from review_insight.llm.prompts import load_prompt
+from review_insight.llm.resilience import RetryingCall
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ class GeminiParams(_Strict):
     prompt: str  # path to a prompts/*.yaml file, relative to the repo root
     # 5 s between request starts = 12 RPM, under the free tier's 15 RPM (docs/GEMINI.md).
     min_interval_s: float = Field(default=5.0, gt=0)
+    # One repair retry for rejected answers. First-try quality is reported either way.
+    repair: bool = True
 
 
 class RunConfig(_Strict):
@@ -238,7 +241,9 @@ class _Prediction:
     pairs: frozenset[Pair]  # empty when the output was rejected: production would not serve it
     latency_ms: float
     cost_usd: float = 0.0
-    failure: str | None = None
+    failure: str | None = None  # after the repair retry, if any
+    first_failure: str | None = None  # on the first attempt
+    attempts: int = 1
     cached: bool = False
     evidence_total: int = 0
     evidence_ungrounded: int = 0
@@ -269,6 +274,8 @@ async def _predict_llm(analyzer: ReviewAnalyzer, gold: Sequence[GoldReview]) -> 
                 latency_ms=analysis.latency_ms,
                 cost_usd=analysis.cost_usd,
                 failure=analysis.failure,
+                first_failure=analysis.first_failure,
+                attempts=analysis.attempts,
                 cached=analysis.cached,
                 evidence_total=analysis.evidence_total,
                 evidence_ungrounded=analysis.evidence_ungrounded,
@@ -281,14 +288,23 @@ async def _predict_llm(analyzer: ReviewAnalyzer, gold: Sequence[GoldReview]) -> 
     return predictions
 
 
+def _rates(failures: Sequence[str | None]) -> dict[str, float]:
+    n = len(failures)
+    return {
+        "schema_valid_rate": round(sum(f != "schema" for f in failures) / n, 4),
+        "accepted_rate": round(sum(f is None for f in failures) / n, 4),
+    }
+
+
 def _reliability(predictions: Sequence[_Prediction]) -> dict[str, Any]:
-    """SPEC §7.2 schema validity and evidence grounding, plus how much came from cache."""
-    n = len(predictions)
+    """SPEC §7.2: schema validity on the first try and after repair, evidence grounding."""
     evidence = sum(p.evidence_total for p in predictions)
     ungrounded = sum(p.evidence_ungrounded for p in predictions)
     return {
-        "schema_valid_rate": round(sum(p.failure != "schema" for p in predictions) / n, 4),
-        "accepted_rate": round(sum(p.failure is None for p in predictions) / n, 4),
+        "first_try": _rates([p.first_failure for p in predictions]),
+        "after_repair": _rates([p.failure for p in predictions]),
+        "repaired": sum(p.first_failure is not None and p.failure is None for p in predictions),
+        "repair_calls": sum(p.attempts > 1 for p in predictions),
         "evidence_grounding_rate": round(1 - ungrounded / evidence, 4) if evidence else None,
         "failures": {
             "schema": sum(p.failure == "schema" for p in predictions),
@@ -299,7 +315,12 @@ def _reliability(predictions: Sequence[_Prediction]) -> dict[str, Any]:
 
 
 def _real_model_call(params: GeminiParams, *, cache_dir: Path) -> ModelCall:
-    """Gemini behind a throttle, behind the disk cache: cache hits never wait or spend quota."""
+    """Cache( Retry( Throttle( Gemini ) ) ).
+
+    Cache outermost: hits never wait or spend quota. Retry outside the throttle: every
+    retry waits its turn, so retries cannot burst past the RPM limit. No fallback model:
+    an eval run measures one model.
+    """
     settings = Settings()
     gemini = build_gemini_call(
         model=params.model,
@@ -307,7 +328,7 @@ def _real_model_call(params: GeminiParams, *, cache_dir: Path) -> ModelCall:
         timeout_s=settings.llm_timeout_s,
     )
     throttled = ThrottledCall(gemini, min_interval_s=params.min_interval_s)
-    return DiskCachedCall(throttled, cache_dir=cache_dir, model=params.model)
+    return DiskCachedCall(RetryingCall(throttled), cache_dir=cache_dir, model=params.model)
 
 
 # --- Run ---------------------------------------------------------------------------------
@@ -343,7 +364,9 @@ def run(
         prompt = load_prompt(Path(config.gemini.prompt))
         prices = load_price_table(pricing_path)
         call = model_call or _real_model_call(config.gemini, cache_dir=cache_dir)
-        analyzer = ReviewAnalyzer(call=call, prompt=prompt, prices=prices)
+        analyzer = ReviewAnalyzer(
+            call=call, prompt=prompt, prices=prices, repair=config.gemini.repair
+        )
         predictions = asyncio.run(_predict_llm(analyzer, gold))
         info = {
             "model": config.gemini.model,
@@ -439,8 +462,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"cost per 1k        ${metrics['cost_per_1k_usd']:.4f}")
     if "reliability" in metrics:
         reliability = metrics["reliability"]
-        print(f"schema valid       {reliability['schema_valid_rate']:.1%}")
-        print(f"accepted           {reliability['accepted_rate']:.1%}")
+        first, final = reliability["first_try"], reliability["after_repair"]
+        for key, label in (("schema_valid_rate", "schema valid"), ("accepted_rate", "accepted")):
+            print(f"{label:18} {first[key]:.1%} -> {final[key]:.1%}  (first try -> after repair)")
+        print(f"repaired           {reliability['repaired']} of {reliability['repair_calls']}")
         print(f"evidence grounded  {reliability['evidence_grounding_rate']}")
         print(f"cache hits         {reliability['cache_hits']}")
     print(f"written to         {path}")
