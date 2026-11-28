@@ -1,12 +1,20 @@
 """Prompt loading, rendering and delimiter hardening (SPEC §6)."""
 
+import logging
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 import yaml
 from pydantic import ValidationError
 
-from review_insight.llm.prompts import PromptBundle, load_prompt, sanitize_review
+from review_insight.llm.prompts import (
+    PromptBundle,
+    load_prompt,
+    load_prompt_by_label,
+    load_prompt_spec,
+    sanitize_review,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 V1 = REPO_ROOT / "prompts/analyze_v1.yaml"
@@ -131,3 +139,121 @@ def test_fingerprint_changes_when_the_text_changes_even_if_the_version_does_not(
     edited = load_prompt(_write(tmp_path, SPEC | {"system": "You analyze reviews!"})).fingerprint
 
     assert original != edited
+
+
+# --- Langfuse prompt management (T9) -----------------------------------------------------
+
+V2 = REPO_ROOT / "prompts/analyze_v2.yaml"
+
+
+@dataclass
+class FakeRemotePrompt:
+    """Shaped like langfuse's ChatPromptClient: messages, a server version and a config."""
+
+    prompt: list[dict[str, str]]
+    version: int
+    config: dict[str, object]
+
+
+class FakeRegistry:
+    """Stands in for the Langfuse client's get_prompt()."""
+
+    def __init__(self, answer: FakeRemotePrompt | Exception) -> None:
+        self.answer = answer
+        self.requests: list[dict[str, object]] = []
+
+    def get_prompt(self, name: str, **kwargs: object) -> FakeRemotePrompt:
+        self.requests.append({"name": name, **kwargs})
+        if isinstance(self.answer, Exception):
+            raise self.answer
+        return self.answer
+
+
+def _remote_v2(**changes: object) -> FakeRemotePrompt:
+    spec = load_prompt_spec(V2)
+    remote = FakeRemotePrompt(
+        prompt=spec.to_langfuse_messages(),
+        version=7,  # Langfuse numbers versions itself; ours travels in the config
+        config={"yaml_version": spec.version, "fingerprint": load_prompt(V2).fingerprint},
+    )
+    for field, value in changes.items():
+        setattr(remote, field, value)
+    return remote
+
+
+def test_langfuse_messages_use_mustache_variables() -> None:
+    # Langfuse templates use {{review}}; LangChain uses {review}. Converted on the way out.
+    system, user = load_prompt_spec(V2).to_langfuse_messages()
+
+    assert (system["role"], user["role"]) == ("system", "user")
+    assert "{{review}}" in user["content"]
+    assert "{review}" not in user["content"].replace("{{review}}", "")
+
+
+def test_a_prompt_survives_the_round_trip_unchanged() -> None:
+    bundle = load_prompt_by_label(
+        "analyze_review", label="production", registry=FakeRegistry(_remote_v2()), fallback=V1
+    )
+
+    assert bundle.source == "langfuse"
+    assert bundle.fingerprint == load_prompt(V2).fingerprint  # the very text in git
+    assert (bundle.version, bundle.langfuse_version) == (2, 7)
+    assert bundle.render("pin trâu") == load_prompt(V2).render("pin trâu")
+
+
+def test_the_label_and_a_short_timeout_are_requested() -> None:
+    registry = FakeRegistry(_remote_v2())
+
+    load_prompt_by_label("analyze_review", label="staging", registry=registry, fallback=V1)
+
+    [request] = registry.requests
+    assert request["name"] == "analyze_review"
+    assert request["label"] == "staging"
+    assert request["type"] == "chat"
+    assert request["fetch_timeout_seconds"] is not None  # never hang startup on Langfuse
+
+
+def test_the_langfuse_prompt_object_is_kept_for_linking_generations() -> None:
+    remote = _remote_v2()
+
+    bundle = load_prompt_by_label(
+        "analyze_review", label="production", registry=FakeRegistry(remote), fallback=V1
+    )
+
+    assert bundle.langfuse_prompt is remote
+
+
+def test_no_registry_means_the_local_yaml() -> None:
+    bundle = load_prompt_by_label("analyze_review", label="production", registry=None, fallback=V2)
+
+    assert (bundle.source, bundle.version) == ("local", 2)
+    assert bundle.langfuse_prompt is None
+
+
+def test_langfuse_down_falls_back_to_the_local_yaml(caplog: pytest.LogCaptureFixture) -> None:
+    registry = FakeRegistry(TimeoutError("langfuse did not answer"))
+
+    with caplog.at_level(logging.WARNING, logger="review_insight.llm.prompts"):
+        bundle = load_prompt_by_label(
+            "analyze_review", label="production", registry=registry, fallback=V2
+        )
+
+    assert (bundle.source, bundle.version) == ("local", 2)
+    assert "falling back" in caplog.text
+
+
+def test_a_broken_remote_prompt_falls_back_instead_of_serving_it(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Someone edited the prompt in the Langfuse UI and removed the review placeholder.
+    broken = _remote_v2(
+        prompt=[{"role": "system", "content": "x"}, {"role": "user", "content": "y"}]
+    )
+
+    with caplog.at_level(logging.WARNING, logger="review_insight.llm.prompts"):
+        bundle = load_prompt_by_label(
+            "analyze_review", label="production", registry=FakeRegistry(broken), fallback=V2
+        )
+
+    assert bundle.source == "local"
+    assert "falling back" in caplog.text
