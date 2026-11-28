@@ -90,10 +90,11 @@ Default verification for every task: `uv run ruff check . && uv run ruff format 
     - Retries absorbed 429/503/504 errors; one 3.1 run still hit `LLMUnavailable` after 3 attempts and resumed from the cache. A 429 response carries a `retryDelay` (e.g. 38 s) that the backoff does not read yet.
   - 💡 failure modes of LLM APIs
 
-- [ ] **T9: Langfuse tracing and prompt management** (M) · deps: T7
+- [x] **T9: Langfuse tracing and prompt management** (M) · deps: T7
   - Acceptance: every analyzer call is traced (model, prompt name and version, tokens, cost, latency) · `scripts/sync_prompts.py --label staging|production` pushes `prompts/*.yaml` · runtime loads the prompt by `PROMPT_LABEL`, falling back to the local YAML if Langfuse is down · eval runs logged as Langfuse dataset runs with scores
   - Verify: traces visible in Langfuse UI · unit test for fallback when the Langfuse client raises
-  - Files: `src/review_insight/observability/langfuse.py`, `llm/prompts.py`, `scripts/sync_prompts.py`, `evals/run.py`
+  - Files: `src/review_insight/observability/langfuse.py`, `llm/prompts.py`, `scripts/sync_prompts.py`, `evals/{run,langfuse_runs}.py`, `docs/DATA_CARD.md` §5
+  - Result (2026-11-28): prompts v1 and v2 synced (Langfuse versions 1 and 2; `staging` and `production` on v2); a second sync created nothing; the production prompt fetched by label has the same fingerprint as `prompts/analyze_v2.yaml`. Dataset `visfd-dev_100` holds runs for the baseline and both zero-shot configs. Evals use the prompt file named in their config (reproducible from git), not the label; the API (T11) serves by label.
   - 💡 LLM observability, prompt versioning
 
 - [ ] **T10: Few-shot strategies** (M) · deps: T7
