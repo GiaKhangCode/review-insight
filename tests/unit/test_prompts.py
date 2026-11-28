@@ -34,11 +34,19 @@ def bundle(tmp_path: Path) -> PromptBundle:
 # --- Loading -----------------------------------------------------------------------------
 
 
-def test_the_committed_v1_prompt_loads() -> None:
-    bundle = load_prompt(V1)
+@pytest.mark.parametrize("version", [1, 2])
+def test_the_committed_prompts_load(version: int) -> None:
+    bundle = load_prompt(REPO_ROOT / f"prompts/analyze_v{version}.yaml")
 
-    assert (bundle.name, bundle.version) == ("analyze_review", 1)
-    assert bundle.ref == "analyze_review@v1"
+    assert (bundle.name, bundle.version) == ("analyze_review", version)
+    assert bundle.ref == f"analyze_review@v{version}"
+
+
+def test_each_prompt_version_has_distinct_text() -> None:
+    # A new version number with unchanged text would make two "versions" indistinguishable.
+    v1, v2 = (load_prompt(REPO_ROOT / f"prompts/analyze_v{n}.yaml") for n in (1, 2))
+
+    assert v1.fingerprint != v2.fingerprint
 
 
 @pytest.mark.parametrize(
