@@ -5,7 +5,17 @@ from pydantic import SecretStr, ValidationError
 
 from review_insight.config import Settings
 
-LLM_VARS = ("GOOGLE_API_KEY", "PRIMARY_MODEL", "FALLBACK_MODEL", "LLM_TIMEOUT_S", "APP_ENV")
+LLM_VARS = (
+    "GOOGLE_API_KEY",
+    "PRIMARY_MODEL",
+    "FALLBACK_MODEL",
+    "LLM_TIMEOUT_S",
+    "APP_ENV",
+    "LANGFUSE_PUBLIC_KEY",
+    "LANGFUSE_SECRET_KEY",
+    "LANGFUSE_HOST",
+    "PROMPT_LABEL",
+)
 
 
 @pytest.fixture(autouse=True)
@@ -69,3 +79,41 @@ def test_production_refuses_to_start_without_a_key() -> None:
 def test_timeout_must_be_a_sane_number_of_seconds(timeout: float) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, llm_timeout_s=timeout)
+
+
+# --- Langfuse and prompt label (T9) ------------------------------------------------------
+
+
+def test_langfuse_is_off_by_default() -> None:
+    # No keys in tests and CI: tracing and remote prompts are disabled, nothing is sent.
+    settings = Settings(_env_file=None)
+
+    assert settings.langfuse_enabled is False
+    assert settings.langfuse_host == "https://cloud.langfuse.com"
+    assert settings.prompt_label == "production"
+
+
+def test_langfuse_is_on_when_both_keys_are_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.langfuse_enabled is True
+    assert "sk-lf-test" not in repr(settings)  # the secret key is a SecretStr
+
+
+@pytest.mark.parametrize("only", ["LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"])
+def test_half_a_langfuse_config_is_rejected(monkeypatch: pytest.MonkeyPatch, only: str) -> None:
+    # One key without the other is a typo, not a choice: fail at startup instead of
+    # silently running without traces.
+    monkeypatch.setenv(only, "some-value")
+
+    with pytest.raises(ValidationError, match="LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY"):
+        Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("label", ["Production", "prod label", ""])
+def test_prompt_label_must_be_a_simple_name(label: str) -> None:
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, prompt_label=label)

@@ -13,4 +13,6 @@ def isolate_settings_from_the_machine(monkeypatch: pytest.MonkeyPatch) -> None:
     fail in CI, where there is no `.env` (found when CI failed on T7).
     """
     monkeypatch.setitem(Settings.model_config, "env_file", None)
-    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    # Secrets that would make a test call a real service (Gemini) or ship data (Langfuse).
+    for name in ("GOOGLE_API_KEY", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.delenv(name, raising=False)
